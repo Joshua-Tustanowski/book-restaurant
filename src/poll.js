@@ -5,6 +5,7 @@ import { isTebiWaitlistEmail, parseTebiWaitlistEmail } from './parse-tebi-email.
 import { confirmReservation } from './confirm-reservation.js';
 import { isMessageProcessed, isEventAlreadyBooked, recordOutcome } from './state.js';
 import { sendPushoverAlert } from './pushover.js';
+import { log } from './logger.js';
 
 const POLL_INTERVAL_MS = 10_000;
 
@@ -40,19 +41,19 @@ async function processMessage(id) {
   try {
     parsed = parseTebiWaitlistEmail(message);
   } catch (err) {
-    console.error(`[${id}] parse failed:`, err.message);
+    log.error(`[${id}] parse failed:`, err.message);
     return;
   }
 
   if (isEventAlreadyBooked(parsed)) {
-    console.log(`[${id}] ${parsed.restaurantName} - ${parsed.eventName} on ${parsed.date} already booked, skipping`);
+    log.info(`[${id}] ${parsed.restaurantName} - ${parsed.eventName} on ${parsed.date} already booked, skipping`);
     return;
   }
 
-  console.log(`[${id}] ${parsed.restaurantName} - ${parsed.eventName} on ${parsed.date}, confirming...`);
+  log.info(`[${id}] ${parsed.restaurantName} - ${parsed.eventName} on ${parsed.date}, confirming...`);
 
   const result = await confirmReservation(parsed.confirmLink, { messageId: id });
-  console.log(`[${id}] outcome: ${result.outcome}`);
+  log.info(`[${id}] outcome: ${result.outcome}`);
 
   const label = result.outcome === 'booked' ? LABEL_BOOKED : LABEL_NEEDS_YOU;
   await applyLabel(id, label);
@@ -94,7 +95,7 @@ async function pollOnce() {
 
   const toProcess = messages.filter((m) => !isMessageProcessed(m.id));
   if (toProcess.length === 0) {
-    console.log(new Date().toISOString(), '- no new waitlist emails');
+    log.info('no new waitlist emails');
     return;
   }
 
@@ -102,7 +103,7 @@ async function pollOnce() {
     try {
       await processMessage(id);
     } catch (err) {
-      console.error(`[${id}] failed:`, err);
+      log.error(`[${id}] failed:`, err);
       await sendPushoverAlert({
         title: 'Reservation bot crashed',
         message: `Message ${id} threw before finishing: ${err.message}`,
@@ -117,24 +118,24 @@ async function main() {
   await pollOnce();
 
   if (watch) {
-    console.log(`Watching every ${POLL_INTERVAL_MS / 1000}s. Ctrl+C to stop.`);
+    log.info(`Watching every ${POLL_INTERVAL_MS / 1000}s. Ctrl+C to stop.`);
     const timer = setInterval(async () => {
       try {
         await pollOnce();
       } catch (err) {
         if (isAuthExpiredError(err)) {
-          console.error('\nRefresh token expired or revoked (Testing-status OAuth apps expire it after 7 days).');
-          console.error('Run: rm token.json && npm run auth\n');
+          log.error('Refresh token expired or revoked (Testing-status OAuth apps expire it after 7 days).');
+          log.error('Run: rm token.json && npm run auth');
           clearInterval(timer);
           process.exit(1);
         }
-        console.error('poll cycle failed:', err);
+        log.error('poll cycle failed:', err);
       }
     }, POLL_INTERVAL_MS);
   }
 }
 
 main().catch((err) => {
-  console.error(err);
+  log.error(err);
   process.exit(1);
 });

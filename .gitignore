@@ -4,3 +4,4 @@ token.json
 state.json
 screenshots/
 .env
+logs/

@@ -73,6 +73,12 @@ Covers every outcome:
   from `pollOnce()`'s catch block, so a failure that happens *before* an outcome is even
   reached still pages you instead of only showing up in terminal/VM logs later
 
+## Logs
+
+Every run (`poll` or `poll:watch`) writes to both the console and `logs/YYYY-MM-DD.log` -
+useful when running detached in `tmux` on a VM, where console output otherwise disappears once
+the session scrolls past or the tab closes. A new dated file starts automatically at midnight.
+
 Requires the free Pushover iOS app plus a paid one-time app unlock (~$5) to receive
 notifications past the trial period. See step 5 in Setup above for the `.env` values needed.
 
