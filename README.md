@@ -57,6 +57,77 @@ and confirm step are Tebi-specific for now.
    npm run poll:watch    # loop every 10s
    ```
 
+## Handlers
+
+An email source is a **handler** - one object describing how to find its mail, read it, and act on it.
+`poll.js` owns everything around that (dedupe, labelling, threaded reply, state, Pushover, logging) and never
+knows which handler it's driving.
+
+```js
+{
+  name,                              // 'tebi'
+  inboxQuery,                        // Gmail search that surfaces candidates
+  isHandled({ message }),            // is this message mine to act on?
+  readInvitation({ message }),       // -> Invitation
+  claimSpot({ invitation }),         // perform the action -> Attempt
+  describe({ invitation, attempt }), // -> { headline, detail } for reply + push
+}
+```
+
+`Invitation` (the offered spot) and `Attempt` (what happened when we tried to take it) are plain objects,
+typed as JSDoc `@typedef`s in `src/handlers/types.js` - they get destructured at call sites and dumped
+straight into logs, so no classes.
+
+Two handlers ship today: `tebi` (real) and `test` (below). One is active per run.
+
+## Test mode
+
+Exercises the whole framework - Gmail match, parse, browser step, screenshot, label, threaded reply,
+`state.json`, Pushover - without touching a real reservation.
+
+```bash
+npm run dev:poll:test          # single pass
+npm run dev:poll:test:watch    # loop every 10s
+```
+
+Then email yourself, subject prefixed `[bot-test]`:
+
+```
+[bot-test]: sushi london
+```
+
+Whatever follows the prefix becomes the search term the no-op browser step runs, so trying a different
+term means sending another email rather than restarting the watcher. A bare `[bot-test]:` falls back to
+`test reservation`.
+
+The no-op `claimSpot` opens a real headless browser at a Bing search for that term, screenshots the
+results full-page, and closes - then reports whatever outcome you asked for. Nothing is booked. The
+screenshot is real, so the reply attachment path gets exercised properly.
+
+Bing rather than Google or DuckDuckGo because both of those serve headless Chromium a consent wall or a
+CAPTCHA instead of results, which makes for a useless screenshot.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TEST_MODE=1` | off | Set by the npm scripts. Swaps in the test handler; the real one is not run. |
+| `TEST_OUTCOME` | `booked` | Forced outcome: `booked`, `still_waitlisted`, or `error`. Anything else throws. |
+| `TEST_SUBJECT_PREFIX` | `[bot-test]` | Subject prefix that triggers the handler. |
+
+```bash
+TEST_OUTCOME=still_waitlisted npm run dev:poll:test
+```
+
+Side effects are deliberately real - labels are applied, the threaded reply is sent, `state.json` is
+written, and Pushover fires at the same emergency priority as production. The point is testing the
+framework, so nothing is stubbed but the confirmation itself.
+
+Two consequences worth knowing:
+
+- Test runs write into the same `state.json` as real ones. Harmless (keys are restaurant + event + date,
+  and test entries use the sender name plus today's date) but the file accumulates test rows.
+- The outcome reply lands in the same thread with the prefix still in its `Re:` subject. Both the Gmail
+  query (`-in:sent`) and `isHandled` (rejects `Re:`) exclude it, so the bot doesn't answer itself and loop.
+
 ## Phone alerts (Pushover)
 
 Gmail/Mail app push notifications are easy to miss - soft banner, no escalation. Instead, the
@@ -112,7 +183,10 @@ Re-authorize, then restart `npm run poll:watch`. There's no way around the 7-day
 
 - Success-state detection (`booked`) is a heuristic - we haven't seen a real "booked" page yet, only the "still waitlisted" state, since the one live email tested against had already lost its spot. Verify the first real `booked` classification against a screenshot before trusting it fully.
 - Local-only: no GCP Pub/Sub push, no watch renewal. Polling stops when the process isn't running.
-- Only handles Tebi's waitlist flow. A genuinely different restaurant platform needs its own parser + confirm adapter.
+- Only handles Tebi's waitlist flow. A genuinely different restaurant platform needs its own handler in
+  `src/handlers/` - the framework around it (dedupe, labels, reply, state, alerts) is already platform-agnostic.
+- One handler is active per run, chosen at startup. Watching two platforms at once would need `poll.js` to
+  fan out across handlers rather than pick one.
 
 ## Next step: move off local polling to Gmail push (Cloud Run + Pub/Sub)
 

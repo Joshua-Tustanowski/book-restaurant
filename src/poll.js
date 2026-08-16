@@ -1,61 +1,44 @@
 import fs from 'fs';
 import path from 'path';
 import { listUnreadFrom, getFullMessage, applyLabel, replyInThread } from './gmail-client.js';
-import { isTebiWaitlistEmail, parseTebiWaitlistEmail } from './parse-tebi-email.js';
-import { confirmReservation } from './confirm-reservation.js';
+import { activeHandler } from './handlers/index.js';
 import { isMessageProcessed, isEventAlreadyBooked, recordOutcome } from './state.js';
 import { sendPushoverAlert } from './pushover.js';
 import { log } from './logger.js';
 
 const POLL_INTERVAL_MS = 10_000;
 
-const GMAIL_QUERY = 'is:unread from:noreply-reservations@tebi.co subject:"spot is available"';
-
 const LABEL_BOOKED = 'Reservations/Booked';
 const LABEL_NEEDS_YOU = 'Reservations/Needs-you';
 
-function replyBodyFor(parsed, result) {
-  const header = `${parsed.restaurantName} - ${parsed.eventName || ''} on ${parsed.date}${parsed.partySize ? ` (${parsed.partySize} people)` : ''}`;
-
-  if (result.outcome === 'booked') {
-    return `${header}\n\nBooked automatically. Screenshot attached.`;
-  }
-  if (result.outcome === 'still_waitlisted') {
-    return `${header}\n\nTried to confirm but the page still shows "waitlist confirmed" - the spot was likely taken before we got to it. Still on the waitlist.\n\nScreenshot attached.`;
-  }
-  return `${header}\n\nSomething went wrong trying to confirm this automatically (outcome: ${result.outcome}). Please check manually:\n${parsed.confirmLink}\n\nScreenshot attached.`;
-}
-
-function pushTitleFor(result) {
-  if (result.outcome === 'booked') return 'Reservation booked!';
-  if (result.outcome === 'still_waitlisted') return 'Waitlist spot missed';
-  return 'Reservation bot error';
-}
+const handler = activeHandler();
 
 async function processMessage(id) {
   const message = await getFullMessage(id);
 
-  if (!isTebiWaitlistEmail(message)) return;
+  if (!handler.isHandled({ message })) return;
 
-  let parsed;
+  let invitation;
   try {
-    parsed = parseTebiWaitlistEmail(message);
+    invitation = handler.readInvitation({ message });
   } catch (err) {
     log.error(`[${id}] parse failed:`, err.message);
     return;
   }
 
-  if (isEventAlreadyBooked(parsed)) {
-    log.info(`[${id}] ${parsed.restaurantName} - ${parsed.eventName} on ${parsed.date} already booked, skipping`);
+  if (isEventAlreadyBooked(invitation)) {
+    log.info(`[${id}] ${invitation.restaurantName} - ${invitation.eventName} on ${invitation.date} already booked, skipping`);
     return;
   }
 
-  log.info(`[${id}] ${parsed.restaurantName} - ${parsed.eventName} on ${parsed.date}, confirming...`);
+  log.info(`[${id}] ${invitation.restaurantName} - ${invitation.eventName} on ${invitation.date}, confirming...`);
 
-  const result = await confirmReservation(parsed.confirmLink, { messageId: id });
-  log.info(`[${id}] outcome: ${result.outcome}`);
+  const attempt = await handler.claimSpot({ invitation });
+  log.info(`[${id}] outcome: ${attempt.outcome}`);
 
-  const label = result.outcome === 'booked' ? LABEL_BOOKED : LABEL_NEEDS_YOU;
+  const { headline, detail } = handler.describe({ invitation, attempt });
+
+  const label = attempt.outcome === 'booked' ? LABEL_BOOKED : LABEL_NEEDS_YOU;
   await applyLabel(id, label);
 
   // Reply goes to the account owner (self-note in the thread), not the restaurant -
@@ -67,21 +50,21 @@ async function processMessage(id) {
     threadId: message.threadId,
     messageId: message.id,
     to: toHeader.value,
-    subject: parsed.subject,
-    bodyText: replyBodyFor(parsed, result),
+    subject: invitation.subject,
+    bodyText: detail,
     attachment: {
-      filename: path.basename(result.screenshotPath),
+      filename: path.basename(attempt.screenshotPath),
       contentType: 'image/png',
-      data: fs.readFileSync(result.screenshotPath),
+      data: fs.readFileSync(attempt.screenshotPath),
     },
   });
 
-  recordOutcome(id, parsed, result.outcome);
+  recordOutcome(id, invitation, attempt.outcome);
 
   await sendPushoverAlert({
-    title: pushTitleFor(result),
-    message: `${parsed.restaurantName} - ${parsed.eventName || ''} on ${parsed.date}\n\n${parsed.confirmLink}`,
-    url: parsed.confirmLink,
+    title: headline,
+    message: `${invitation.restaurantName} - ${invitation.eventName || ''} on ${invitation.date}\n\n${invitation.confirmLink}`,
+    url: invitation.confirmLink,
     urlTitle: 'Open confirm link',
   });
 }
@@ -91,7 +74,7 @@ function isAuthExpiredError(err) {
 }
 
 async function pollOnce() {
-  const messages = await listUnreadFrom(GMAIL_QUERY);
+  const messages = await listUnreadFrom(handler.inboxQuery);
 
   const toProcess = messages.filter((m) => !isMessageProcessed(m.id));
   if (toProcess.length === 0) {
@@ -114,6 +97,8 @@ async function pollOnce() {
 
 async function main() {
   const watch = process.argv.includes('--watch');
+
+  log.info(`handler: ${handler.name} | query: ${handler.inboxQuery}`);
 
   await pollOnce();
 
