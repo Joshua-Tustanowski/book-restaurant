@@ -4,6 +4,7 @@ import { listUnreadFrom, getFullMessage, applyLabel, replyInThread } from './gma
 import { isTebiWaitlistEmail, parseTebiWaitlistEmail } from './parse-tebi-email.js';
 import { confirmReservation } from './confirm-reservation.js';
 import { isMessageProcessed, isEventAlreadyBooked, recordOutcome } from './state.js';
+import { sendPushoverAlert } from './pushover.js';
 
 const POLL_INTERVAL_MS = 10_000;
 
@@ -22,6 +23,12 @@ function replyBodyFor(parsed, result) {
     return `${header}\n\nTried to confirm but the page still shows "waitlist confirmed" - the spot was likely taken before we got to it. Still on the waitlist.\n\nScreenshot attached.`;
   }
   return `${header}\n\nSomething went wrong trying to confirm this automatically (outcome: ${result.outcome}). Please check manually:\n${parsed.confirmLink}\n\nScreenshot attached.`;
+}
+
+function pushTitleFor(result) {
+  if (result.outcome === 'booked') return 'Reservation booked!';
+  if (result.outcome === 'still_waitlisted') return 'Waitlist spot missed';
+  return 'Reservation bot error';
 }
 
 async function processMessage(id) {
@@ -69,6 +76,13 @@ async function processMessage(id) {
   });
 
   recordOutcome(id, parsed, result.outcome);
+
+  await sendPushoverAlert({
+    title: pushTitleFor(result),
+    message: `${parsed.restaurantName} - ${parsed.eventName || ''} on ${parsed.date}\n\n${parsed.confirmLink}`,
+    url: parsed.confirmLink,
+    urlTitle: 'Open confirm link',
+  });
 }
 
 function isAuthExpiredError(err) {
@@ -89,6 +103,10 @@ async function pollOnce() {
       await processMessage(id);
     } catch (err) {
       console.error(`[${id}] failed:`, err);
+      await sendPushoverAlert({
+        title: 'Reservation bot crashed',
+        message: `Message ${id} threw before finishing: ${err.message}`,
+      });
     }
   }
 }

@@ -17,6 +17,7 @@ and confirm step are Tebi-specific for now.
    - `error` - expired/not-found/error language detected
 5. Labels the email (`Reservations/Booked` or `Reservations/Needs-you`) and replies in the thread to your own inbox with the outcome and the screenshot attached.
 6. Records the outcome in `state.json`, keyed by restaurant + event + date. If a later email arrives for an event already recorded as `booked`, it's skipped rather than re-attempted.
+7. Sends a Pushover alert to your phone at emergency priority (repeats until acknowledged) for every outcome - `booked`, `still_waitlisted`, or `error`.
 
 ## Setup
 
@@ -37,12 +38,43 @@ and confirm step are Tebi-specific for now.
 
    Opens a URL to authorize, paste the resulting code back into the terminal. Saves `token.json` locally.
 
-5. Run once, or continuously:
+5. (Optional but recommended) Set up phone alerts via [Pushover](https://pushover.net):
+   - Sign up, copy your **User Key** from the dashboard
+   - Create an Application at pushover.net/apps/build to get an **App Token**
+   - Copy `.env.example` to `.env` and fill in both:
+
+     ```bash
+     cp .env.example .env
+     ```
+
+   Without a `.env`, the bot still runs fine - it just skips sending phone alerts and logs a
+   warning instead.
+
+6. Run once, or continuously:
 
    ```bash
    npm run poll          # single pass
    npm run poll:watch    # loop every 10s
    ```
+
+## Phone alerts (Pushover)
+
+Gmail/Mail app push notifications are easy to miss - soft banner, no escalation. Instead, the
+bot pages your phone directly the moment it processes an email, using Pushover's **emergency**
+priority: the notification repeats and vibrates every 60s for up to an hour until you
+acknowledge it. This fires as the last step of handling an email, after the confirm attempt,
+Gmail labeling, and thread reply are already done - it's a notification layer on top of
+completed work, not a gate that blocks it.
+
+Covers every outcome:
+
+- `booked`, `still_waitlisted`, `error` - a graceful outcome, alerted from inside `processMessage()`
+- a hard crash (network timeout, Playwright exception, unparseable email) - alerted separately
+  from `pollOnce()`'s catch block, so a failure that happens *before* an outcome is even
+  reached still pages you instead of only showing up in terminal/VM logs later
+
+Requires the free Pushover iOS app plus a paid one-time app unlock (~$5) to receive
+notifications past the trial period. See step 5 in Setup above for the `.env` values needed.
 
 ## Gmail API quota
 
