@@ -87,6 +87,32 @@ Detach with `Ctrl+B` then `D` - the process keeps running. Reattach later with:
 tmux attach -t poll
 ```
 
+## Checking on it
+
+SSH in (`gcloud compute ssh restaurant-waitlist-vm --zone=us-east1-c --project reservation-waitlist-checker`, swapping the zone), then:
+
+```bash
+tmux attach -t poll          # reattach to the running session, watch it live
+```
+
+`Ctrl+B` then `D` to detach again without stopping it.
+
+To check without attaching (doesn't disturb the running session):
+
+```bash
+tail -f ~/book-restaurant/logs/$(date +%F).log     # follow today's log live
+tail -100 ~/book-restaurant/logs/$(date +%F).log   # last 100 lines
+ls ~/book-restaurant/logs/                         # see all dated log files
+cat ~/book-restaurant/state.json                   # what's been booked/attempted so far
+tmux ls                                            # confirm the poll session is still running
+```
+
+One-liner from your laptop, no SSH session to manage (swap the zone):
+
+```bash
+gcloud compute ssh restaurant-waitlist-vm --zone=us-east1-c --project reservation-waitlist-checker --command="tail -50 ~/book-restaurant/logs/\$(date +%F).log"
+```
+
 ## Notes
 
 - If `credentials.json`/`token.json` weren't copied over in step 4, run `npm run auth` on the
