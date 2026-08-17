@@ -8,7 +8,8 @@
     "poll": "node --env-file-if-exists=.env src/poll.js",
     "poll:watch": "node --env-file-if-exists=.env src/poll.js --watch",
     "dev:poll:test": "TEST_MODE=1 node --env-file-if-exists=.env src/poll.js",
-    "dev:poll:test:watch": "TEST_MODE=1 node --env-file-if-exists=.env src/poll.js --watch"
+    "dev:poll:test:watch": "TEST_MODE=1 node --env-file-if-exists=.env src/poll.js --watch",
+    "deploy": "scripts/deploy.sh"
   },
   "dependencies": {
     "googleapis": "^144.0.0",
