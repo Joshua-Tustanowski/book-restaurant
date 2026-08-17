@@ -8,7 +8,7 @@ and confirm step are Tebi-specific for now.
 
 ## How it works
 
-1. Polls Gmail every 10s for unread mail from Tebi matching "spot is available".
+1. Polls Gmail every 10s (configurable, see [Poll interval](#poll-interval)) for unread mail from Tebi matching "spot is available".
 2. Parses the plain-text body for restaurant name, event, date, party size, and the confirm link.
 3. Opens the confirm link in a headless browser (Playwright) and inspects the resulting page.
 4. Classifies the outcome:
@@ -56,6 +56,35 @@ and confirm step are Tebi-specific for now.
    npm run poll          # single pass
    npm run poll:watch    # loop every 10s
    ```
+
+## Poll interval
+
+Watch mode waits a fixed gap between cycles, 10s by default. Override it with `POLL_INTERVAL_MS` in
+`.env` (persistent, e.g. on the VM) or `--interval=<ms>` on the command line, which wins over the env var:
+
+```bash
+POLL_INTERVAL_MS=30000 npm run poll:watch
+npm run poll:watch -- --interval=5000
+```
+
+Values below 1000ms, or anything non-numeric, are rejected at startup rather than silently coerced.
+The value is only used in watch mode, but it's still validated on a single pass so a broken `.env` is
+caught immediately instead of on the next long-running restart.
+
+The loop is sequential, not a fixed-period timer: the next cycle starts `POLL_INTERVAL_MS` after the
+previous one *finishes*, so the interval is a gap between cycles rather than a period. This matters
+because a cycle that finds a match can easily run longer than the interval - `claimSpot` drives a real
+browser, which took ~20s in practice against a 10s interval. A `setInterval` would fire the next cycle
+on top of the in-flight one, and since the email is still unread and `state.json` isn't written until
+the outcome is known, that second cycle would re-confirm the same spot and send a second label, reply,
+and phone alert. Overlapping cycles did exactly this in production on 2026-08-17, handling one email
+three times.
+
+In-process, messages currently being handled are also tracked in a set and skipped, so overlap can't
+double-handle even if a future change reintroduces concurrent cycles. That set is cleared when a message
+*fails*, deliberately: nothing was written to `state.json`, so the next cycle retries the spot rather than
+abandoning it. The tradeoff is that a repeatedly-failing message is retried every cycle - each failure
+pages your phone, so this surfaces loudly rather than silently.
 
 ## Handlers
 
@@ -162,7 +191,7 @@ Free tier limits (per project):
 
 Cost per call: `messages.list` = 5, `messages.get` = 5, `messages.modify` (labels) = 5, `messages.send` = 100.
 
-At the current 10s poll interval, a no-match cycle costs 5 units (list only) - 8,640 cycles/day = ~43,200 units/day, a trivial fraction of the daily quota. A cycle with a match costs roughly 115 units (list + get + modify + send). Polling far more aggressively (down to ~1s) would still stay well under both caps - the real constraint on interval is local resource use (spinning up Playwright/Chromium per match), not Gmail's API limits.
+At the default 10s poll interval, a no-match cycle costs 5 units (list only) - 8,640 cycles/day = ~43,200 units/day, a trivial fraction of the daily quota. A cycle with a match costs roughly 115 units (list + get + modify + send). Polling far more aggressively (down to the 1s floor) would still stay well under both caps - the real constraint on interval is local resource use (spinning up Playwright/Chromium per match), not Gmail's API limits.
 
 ## Auth token expiry (running for multiple days)
 
@@ -207,7 +236,7 @@ What this needs, roughly:
 3. **Stateless rewrite**: `state.json` and `token.json` currently live on local disk, which
    doesn't survive a scale-to-zero container. These move to Firestore (state/dedupe) and
    Secret Manager (OAuth tokens).
-4. **HTTP handler instead of `setInterval`**: the current `pollOnce()` loop in `poll.js`
+4. **HTTP handler instead of the poll loop**: the current `pollOnce()` loop in `poll.js`
    becomes a POST handler triggered by the Pub/Sub push, which calls `users.history.list()`
    to find what changed since the last known `historyId`, then runs the same
    parse -> confirm -> label -> reply logic unchanged.
