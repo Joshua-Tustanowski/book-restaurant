@@ -17,11 +17,24 @@ const CONFIRM_LINK_RE = /https:\/\/live\.tebi\.co\/ecom\/reservations\/\S+/;
 const STILL_WAITLISTED_RE = /waitlist confirmed|we will contact you when a spot becomes available/i;
 const ERROR_RE = /expired|no longer available|something went wrong|not found/i;
 
-// The restaurant says a deposit (~£40) is taken at booking time, so the flow
-// almost certainly continues into a payment step we've never seen. Until we
-// have a real trace of it we don't try to drive it - we just record loudly
-// whether the page in front of us is asking for money or card details.
-const PAYMENT_RE = /deposit|prepayment|pre-authoris|pre-authoriz|card details|payment|£\s*\d/i;
+// A live spot leads to a card-guarantee step, not a prepayment: Tebi stores a
+// card and charges a no-show fee only if you miss the booking or cancel late.
+// The bot never drives that step - it stops at the boundary and hands over.
+const PAYMENT_RE = /card details|security code|no.?show|will be charged|guarantee your reservation|deposit|prepayment|pre-authoris|pre-authoriz/i;
+
+// Adyen Secured Fields render the card inputs inside cross-origin iframes, so
+// the card number never enters Tebi's DOM. The iframe host is a far stronger
+// signal that we're on the payment step than any wording, which changes per
+// restaurant and per locale.
+const ADYEN_FRAME_RE = /checkoutshopper[^/]*\.adyen\.com/i;
+
+// "This reservation expires in 59 minutes 48 seconds" - reaching the payment
+// step means the spot is already HELD. That window is the whole reason the bot
+// can stop here safely: the race is getting to the form, not paying.
+const HOLD_EXPIRY_RE = /reservation expires in ([^.\n]+)/i;
+
+// The fee quoted alongside the card form, e.g. "A fee of £20.00 will be charged".
+const FEE_RE = /(?:fee of\s*)?(£\s?\d+(?:\.\d{2})?)/i;
 
 // Settle time after load. Kept as a named constant because it's the main knob
 // between "screenshot caught a spinner" and "wasted a second of a race".
@@ -116,9 +129,20 @@ export const tebiHandler = {
         log.info(`[${invitation.messageId}] page offers no clickable controls`);
       }
 
-      const mentionsPayment = PAYMENT_RE.test(bodyText);
+      // Two independent signals; either alone is enough. The iframe survives
+      // reworded copy, the text survives Adyen being swapped out.
+      const hasAdyenFrame = page.frames().some((f) => ADYEN_FRAME_RE.test(f.url()));
+      const mentionsPayment = hasAdyenFrame || PAYMENT_RE.test(bodyText);
+
+      const holdExpiresIn = bodyText.match(HOLD_EXPIRY_RE)?.[1]?.trim() ?? null;
+      const fee = mentionsPayment ? (bodyText.match(FEE_RE)?.[1]?.replace(/\s/g, '') ?? null) : null;
+
       if (mentionsPayment) {
-        log.info(`[${invitation.messageId}] page mentions payment/deposit - capturing for review, not driving it`);
+        log.info(
+          `[${invitation.messageId}] payment step reached${hasAdyenFrame ? ' (Adyen frame)' : ' (text match)'}` +
+            `${fee ? `, fee ${fee}` : ''}${holdExpiresIn ? `, hold expires in ${holdExpiresIn}` : ''}` +
+            ' - spot held, handing over for manual completion',
+        );
       }
 
       const stillWaitlisted = STILL_WAITLISTED_RE.test(bodyText);
@@ -130,11 +154,10 @@ export const tebiHandler = {
       } else if (stillWaitlisted) {
         outcome = 'still_waitlisted';
       } else if (mentionsPayment) {
-        // 'booked' is inferred from the ABSENCE of waitlist language, so a
-        // payment page - which has none - would otherwise read as success and
-        // page us saying the table is secured when nothing has been paid.
-        // Needs a human: report it as an error rather than a false win.
-        outcome = 'error';
+        // Distinct from both 'booked' and 'error'. The spot IS held - this is
+        // the good path - but it is not booked until a human enters the card,
+        // so calling it either would misreport what happened.
+        outcome = 'payment_required';
       } else {
         outcome = 'booked';
       }
@@ -154,6 +177,8 @@ export const tebiHandler = {
         outcome,
         finalUrl: page.url(),
         mentionsPayment,
+        holdExpiresIn,
+        fee,
         actions,
       });
 
@@ -169,6 +194,8 @@ export const tebiHandler = {
         manifestPath,
         frames,
         mentionsPayment,
+        holdExpiresIn,
+        fee,
         actions,
         finalUrl: page.url(),
       };
@@ -193,10 +220,28 @@ export const tebiHandler = {
         detail: `${header}\n\nTried to confirm but the page still shows "waitlist confirmed" - either the spot went before we got there, or the flow needed a step we didn't take. The trace below shows which.\n\nScreenshot attached.${trace}`,
       };
     }
-    if (attempt.mentionsPayment) {
+    if (attempt.outcome === 'payment_required') {
+      // The deadline goes first in both headline and body: this is the one
+      // outcome where the reply is a call to action on a clock, not a report.
+      const deadline = attempt.holdExpiresIn ? ` - ${attempt.holdExpiresIn} left` : '';
       return {
-        headline: 'Deposit needed - finish manually',
-        detail: `${header}\n\nThe page is asking for a payment or deposit, which the bot does not attempt. The spot is NOT booked. Open the link and finish it yourself:\n${invitation.confirmLink}\n\nScreenshot attached.${trace}`,
+        headline: `Spot held${deadline} - add card`,
+        detail: [
+          header,
+          '',
+          `THE SPOT IS HELD${attempt.holdExpiresIn ? ` AND EXPIRES IN ${attempt.holdExpiresIn.toUpperCase()}` : ''}.`,
+          '',
+          'Tebi is asking for card details to guarantee the reservation. The bot',
+          'does not enter card details, so the last step is yours:',
+          '',
+          invitation.confirmLink,
+          '',
+          attempt.fee
+            ? `Nothing is charged now. ${attempt.fee} applies only if you no-show or cancel late.`
+            : 'Card is stored as a guarantee - check the page for the exact terms.',
+          '',
+          'Not booked until you finish it. Screenshot attached.',
+        ].join('\n') + trace,
       };
     }
     return {

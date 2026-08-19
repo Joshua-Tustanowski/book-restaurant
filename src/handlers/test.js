@@ -14,7 +14,7 @@ import { ScreenshotTrace } from './trace.js';
 const SUBJECT_PREFIX = process.env.TEST_SUBJECT_PREFIX || '[bot-test]';
 const DEFAULT_SEARCH_QUERY = process.env.TEST_SEARCH_QUERY || 'test reservation';
 
-const VALID_OUTCOMES = ['booked', 'still_waitlisted', 'error'];
+const VALID_OUTCOMES = ['booked', 'payment_required', 'still_waitlisted', 'error'];
 const DEFAULT_OUTCOME = 'booked';
 
 // Google and DuckDuckGo both serve headless Chromium a consent wall or a CAPTCHA

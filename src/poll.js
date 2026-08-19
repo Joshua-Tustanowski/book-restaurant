@@ -11,6 +11,9 @@ const MIN_POLL_INTERVAL_MS = 1_000;
 
 const LABEL_BOOKED = 'Reservations/Booked';
 const LABEL_NEEDS_YOU = 'Reservations/Needs-you';
+// payment_required is time-critical and actionable, unlike the other non-booked
+// outcomes, so it gets its own label rather than sharing the catch-all.
+const LABEL_ACTION_REQUIRED = 'Reservations/Action-required';
 
 const handler = activeHandler();
 
@@ -67,7 +70,11 @@ async function processMessage(id) {
 
   const { headline, detail } = handler.describe({ invitation, attempt });
 
-  const label = attempt.outcome === 'booked' ? LABEL_BOOKED : LABEL_NEEDS_YOU;
+  const LABELS_BY_OUTCOME = {
+    booked: LABEL_BOOKED,
+    payment_required: LABEL_ACTION_REQUIRED,
+  };
+  const label = LABELS_BY_OUTCOME[attempt.outcome] ?? LABEL_NEEDS_YOU;
   await applyLabel(id, label);
 
   // Reply goes to the account owner (self-note in the thread), not the restaurant -

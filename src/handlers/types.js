@@ -44,14 +44,20 @@
  * What happened when the handler tried to claim the spot.
  *
  * @typedef {object} Attempt
- * @property {'booked'|'still_waitlisted'|'error'} outcome
+ * @property {'booked'|'payment_required'|'still_waitlisted'|'error'} outcome
+ *   - `booked` - table secured, nothing left to do
+ *   - `payment_required` - spot HELD, but needs card details a human must enter
+ *   - `still_waitlisted` - spot gone before we arrived
+ *   - `error` - expired/not-found/unexpected page
  * @property {string|null} screenshotPath - the frame that justifies the outcome; poll.js attaches it to the reply
  * @property {string} finalUrl
  * @property {string} bodyText
  * @property {string} [traceDir] - directory holding every frame plus trace.json
  * @property {string|null} [manifestPath]
  * @property {TraceFrame[]} [frames] - the full timeline, in capture order
- * @property {boolean} [mentionsPayment] - page asked for a deposit/card details
+ * @property {boolean} [mentionsPayment] - page asked for card details
+ * @property {string|null} [holdExpiresIn] - how long the held spot lasts, e.g. '59 minutes 48 seconds'
+ * @property {string|null} [fee] - no-show fee quoted on the payment step, e.g. '£20.00'
  * @property {PageAction[]} [actions] - controls present on the final page
  */
 

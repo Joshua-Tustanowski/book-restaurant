@@ -13,9 +13,10 @@ and confirm step are Tebi-specific for now.
 3. Opens the confirm link in a headless browser (Playwright) and inspects the resulting page, capturing an ordered screenshot trace of every step (see [Screenshot traces](#screenshot-traces)).
 4. Classifies the outcome:
    - `booked` - no "still waitlisted" language present
+   - `payment_required` - the spot is **held** but Tebi wants card details to guarantee it (see [The card step](#the-card-step))
    - `still_waitlisted` - page still says "Waitlist confirmed / we will contact you" (spot was likely taken by someone else first)
    - `error` - expired/not-found/error language detected
-5. Labels the email (`Reservations/Booked` or `Reservations/Needs-you`) and replies in the thread to your own inbox with the outcome, the frame-by-frame timeline, and the final screenshot attached.
+5. Labels the email (`Reservations/Booked`, `Reservations/Action-required`, or `Reservations/Needs-you`) and replies in the thread to your own inbox with the outcome, the frame-by-frame timeline, and the final screenshot attached.
 6. Records the outcome in `state.json`, keyed by restaurant + event + date. If a later email arrives for an event already recorded as `booked`, it's skipped rather than re-attempted.
 7. Sends a Pushover alert to your phone at emergency priority (repeats until acknowledged) for every outcome - `booked`, `still_waitlisted`, or `error`.
 
@@ -47,20 +48,28 @@ A frame that fails to capture is logged and skipped - it never aborts the attemp
 
 The Gmail reply quotes the timeline inline and attaches the final frame; the full set stays on disk.
 
-## The deposit question
+## The card step
 
-The restaurant takes a deposit (~£40) at booking time, so the expectation was that the confirm link leads into a payment step the bot was failing to complete.
+A confirm link whose spot is still available leads into a two-step booking flow:
 
-Tracing a live confirm link shows it doesn't - at least not from a link whose spot has already gone.
-That page offers exactly three controls: "Unsubscribe from the waitlist", "Make another reservation", and the Tebi footer link.
-There is no reserve button, no card field, and no mention of a deposit.
-It is a dead end, not an unfinished flow.
+1. **Details** - name, email, phone, notes, "reserve as a business", marketing opt-in -> *Add card details*
+2. **Card** - Adyen card form -> *Confirm details*
 
-So `still_waitlisted` looks genuine rather than a missed step: by the time the bot arrives, the spot is gone and Tebi has degraded the link to a plain waitlist-status page.
-The deposit step presumably only appears on a link that still has a spot attached - which is exactly the case we've never captured.
-The trace is what will show it: the first attempt that reaches a live spot will record the payment page frame by frame, and `mentionsPayment` in `trace.json` flags it.
+Reaching step 2 means **the spot is already held**: that screen carries a countdown ("This reservation expires in 59 minutes 48 seconds").
+The race is getting to the form, not completing it - once held, there is roughly an hour of slack.
 
-The bot deliberately does **not** attempt to pay. It captures and reports; paying is a manual decision.
+This is a card *guarantee*, not a prepayment.
+Nothing is charged at booking; a no-show fee (£20.00 at the time of writing) applies only if you miss the reservation or cancel within a day.
+
+The bot stops at step 2 and reports `payment_required`.
+It does not enter card details, and there are deliberately no card variables in `.env.example`.
+The card fields are Adyen Secured Fields - cross-origin iframes from `checkoutshopper-live.adyen.com`, so the card number never enters Tebi's DOM and cannot be filled by targeting the visible page.
+Finish that step yourself, in a browser, with a password manager.
+
+`payment_required` gets its own label (`Reservations/Action-required`) and a Pushover alert that leads with the deadline, because it is the one outcome that is both good news and time-critical.
+It also counts as settled in `state.json`: the spot is held under your name, so re-running the confirm link would either race a checkout you're part-way through or hold a second table.
+
+Detection keys off the Adyen iframe first and page wording second, so it survives either being changed independently.
 
 ## Setup
 
@@ -254,7 +263,8 @@ Re-authorize, then restart `npm run poll:watch`. There's no way around the 7-day
 ## Known limitations
 
 - Success-state detection (`booked`) is a heuristic - we haven't seen a real "booked" page yet, only the "still waitlisted" state, since every live link tested against had already lost its spot. Verify the first real `booked` classification against its trace before trusting it fully.
-- The deposit/payment step has never been observed (see [The deposit question](#the-deposit-question)). If a live link does lead to one, the bot captures it and reports - it does not pay. That attempt will classify as `booked` under the current heuristic despite no booking having completed, so the first trace showing `mentionsPayment: true` needs reading before the outcome is believed.
+- `payment_required` has been verified against a replica of the real card screen and against the live dead-end page (no false positive), but never against a live held spot - no waitlist email has offered one since the outcome was added. The countdown and fee are scraped from page copy, so both are best-effort: the link in the alert is the source of truth.
+- The bot never completes a booking end to end. `payment_required` means held, not booked, and it expires - if you miss the alert, you lose the spot.
 - Traces are never pruned. Each attempt writes a handful of full-page PNGs, which is negligible at the current volume but is unbounded over time.
 - Local-only: no GCP Pub/Sub push, no watch renewal. Polling stops when the process isn't running.
 - Only handles Tebi's waitlist flow. A genuinely different restaurant platform needs its own handler in
