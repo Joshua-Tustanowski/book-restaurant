@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
-import { getHeader, findTextPlainPart, screenshotPathFor } from './shared.js';
+import { getHeader, findTextPlainPart } from './shared.js';
+import { ScreenshotTrace } from './trace.js';
 
 // Exercises the whole framework - Gmail match, parse, browser step, screenshot,
 // label, threaded reply, state, Pushover - without touching a real reservation.
@@ -87,17 +88,39 @@ export const testHandler = {
 
     const browser = await chromium.launch();
     const page = await browser.newPage();
+    const trace = new ScreenshotTrace(invitation.messageId);
 
     try {
       await page.goto(invitation.confirmLink, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await trace.capture(page, 'loaded');
+
       await page.waitForTimeout(1000);
+      await trace.capture(page, `final-${outcome}`);
 
       const bodyText = await page.innerText('body');
 
-      const screenshotPath = screenshotPathFor(invitation.messageId);
-      await page.screenshot({ path: screenshotPath, fullPage: true });
+      // Listener-driven frames are queued, not awaited - drain them so the
+      // manifest describes the whole timeline rather than part of it.
+      await trace.settle();
 
-      return { outcome, bodyText, screenshotPath, finalUrl: page.url() };
+      const manifestPath = trace.writeManifest({
+        messageId: invitation.messageId,
+        confirmLink: invitation.confirmLink,
+        outcome,
+        finalUrl: page.url(),
+      });
+
+      const frames = trace.frames;
+
+      return {
+        outcome,
+        bodyText,
+        screenshotPath: frames.at(-1)?.path ?? null,
+        traceDir: trace.dir,
+        manifestPath,
+        frames,
+        finalUrl: page.url(),
+      };
     } finally {
       await browser.close();
     }

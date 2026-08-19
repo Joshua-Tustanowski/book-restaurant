@@ -10,14 +10,57 @@ and confirm step are Tebi-specific for now.
 
 1. Polls Gmail every 10s (configurable, see [Poll interval](#poll-interval)) for unread mail from Tebi matching "spot is available".
 2. Parses the plain-text body for restaurant name, event, date, party size, and the confirm link.
-3. Opens the confirm link in a headless browser (Playwright) and inspects the resulting page.
+3. Opens the confirm link in a headless browser (Playwright) and inspects the resulting page, capturing an ordered screenshot trace of every step (see [Screenshot traces](#screenshot-traces)).
 4. Classifies the outcome:
    - `booked` - no "still waitlisted" language present
    - `still_waitlisted` - page still says "Waitlist confirmed / we will contact you" (spot was likely taken by someone else first)
    - `error` - expired/not-found/error language detected
-5. Labels the email (`Reservations/Booked` or `Reservations/Needs-you`) and replies in the thread to your own inbox with the outcome and the screenshot attached.
+5. Labels the email (`Reservations/Booked` or `Reservations/Needs-you`) and replies in the thread to your own inbox with the outcome, the frame-by-frame timeline, and the final screenshot attached.
 6. Records the outcome in `state.json`, keyed by restaurant + event + date. If a later email arrives for an event already recorded as `booked`, it's skipped rather than re-attempted.
 7. Sends a Pushover alert to your phone at emergency priority (repeats until acknowledged) for every outcome - `booked`, `still_waitlisted`, or `error`.
+
+## Screenshot traces
+
+A claim attempt captures a *sequence* of screenshots, not one.
+The confirm link can redirect, render client-side, or move through several states, and a single frame can't tell you which of those happened.
+
+Each attempt writes a directory keyed by Gmail message ID:
+
+```
+screenshots/<messageId>/
+  01-navigated.png
+  02-loaded.png
+  03-settled.png
+  04-final-still_waitlisted.png
+  trace.json
+```
+
+Frames are numbered from 1 in capture order and zero-padded, so a plain alphabetical listing is chronological.
+The ordinal is baked into the filename rather than inferred from mtimes, which get rewritten when files are copied off the VM.
+
+`trace.json` records the same order plus, per frame, the URL at capture time and the offset in milliseconds from the start of the attempt.
+It also records the controls the final page was offering and whether the page mentioned a payment or deposit.
+
+Frames come from two sources: points the handler explicitly captures (`loaded`, `settled`, `final-<outcome>`) and a `framenavigated` listener that fires whenever the page moves on its own.
+Captures are serialised through a queue, so the two sources can't race for the same ordinal.
+A frame that fails to capture is logged and skipped - it never aborts the attempt, since a lost screenshot must not cost a reservation.
+
+The Gmail reply quotes the timeline inline and attaches the final frame; the full set stays on disk.
+
+## The deposit question
+
+The restaurant takes a deposit (~£40) at booking time, so the expectation was that the confirm link leads into a payment step the bot was failing to complete.
+
+Tracing a live confirm link shows it doesn't - at least not from a link whose spot has already gone.
+That page offers exactly three controls: "Unsubscribe from the waitlist", "Make another reservation", and the Tebi footer link.
+There is no reserve button, no card field, and no mention of a deposit.
+It is a dead end, not an unfinished flow.
+
+So `still_waitlisted` looks genuine rather than a missed step: by the time the bot arrives, the spot is gone and Tebi has degraded the link to a plain waitlist-status page.
+The deposit step presumably only appears on a link that still has a spot attached - which is exactly the case we've never captured.
+The trace is what will show it: the first attempt that reaches a live spot will record the payment page frame by frame, and `mentionsPayment` in `trace.json` flags it.
+
+The bot deliberately does **not** attempt to pay. It captures and reports; paying is a manual decision.
 
 ## Setup
 
@@ -210,7 +253,9 @@ Re-authorize, then restart `npm run poll:watch`. There's no way around the 7-day
 
 ## Known limitations
 
-- Success-state detection (`booked`) is a heuristic - we haven't seen a real "booked" page yet, only the "still waitlisted" state, since the one live email tested against had already lost its spot. Verify the first real `booked` classification against a screenshot before trusting it fully.
+- Success-state detection (`booked`) is a heuristic - we haven't seen a real "booked" page yet, only the "still waitlisted" state, since every live link tested against had already lost its spot. Verify the first real `booked` classification against its trace before trusting it fully.
+- The deposit/payment step has never been observed (see [The deposit question](#the-deposit-question)). If a live link does lead to one, the bot captures it and reports - it does not pay. That attempt will classify as `booked` under the current heuristic despite no booking having completed, so the first trace showing `mentionsPayment: true` needs reading before the outcome is believed.
+- Traces are never pruned. Each attempt writes a handful of full-page PNGs, which is negligible at the current volume but is unbounded over time.
 - Local-only: no GCP Pub/Sub push, no watch renewal. Polling stops when the process isn't running.
 - Only handles Tebi's waitlist flow. A genuinely different restaurant platform needs its own handler in
   `src/handlers/` - the framework around it (dedupe, labels, reply, state, alerts) is already platform-agnostic.

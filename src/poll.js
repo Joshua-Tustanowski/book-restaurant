@@ -63,7 +63,7 @@ async function processMessage(id) {
   log.info(`[${id}] ${invitation.restaurantName} - ${invitation.eventName} on ${invitation.date}, confirming...`);
 
   const attempt = await handler.claimSpot({ invitation });
-  log.info(`[${id}] outcome: ${attempt.outcome}`);
+  log.info(`[${id}] outcome: ${attempt.outcome}${attempt.frames?.length ? ` (${attempt.frames.length} frames in ${attempt.traceDir})` : ''}`);
 
   const { headline, detail } = handler.describe({ invitation, attempt });
 
@@ -75,17 +75,30 @@ async function processMessage(id) {
   const headers = message.payload.headers;
   const toHeader = headers.find((h) => h.name.toLowerCase() === 'to');
 
+  // A missing or unreadable screenshot must not cost us the notification - the
+  // outcome is the point, the image is supporting evidence.
+  let attachment;
+  try {
+    if (attempt.screenshotPath) {
+      attachment = {
+        filename: path.basename(attempt.screenshotPath),
+        contentType: 'image/png',
+        data: fs.readFileSync(attempt.screenshotPath),
+      };
+    } else {
+      log.error(`[${id}] no screenshot captured; replying without an attachment`);
+    }
+  } catch (err) {
+    log.error(`[${id}] could not read screenshot ${attempt.screenshotPath}:`, err.message);
+  }
+
   await replyInThread({
     threadId: message.threadId,
     messageId: message.id,
     to: toHeader.value,
     subject: invitation.subject,
     bodyText: detail,
-    attachment: {
-      filename: path.basename(attempt.screenshotPath),
-      contentType: 'image/png',
-      data: fs.readFileSync(attempt.screenshotPath),
-    },
+    attachment,
   });
 
   recordOutcome(id, invitation, attempt.outcome);

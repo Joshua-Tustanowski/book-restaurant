@@ -17,13 +17,42 @@
  */
 
 /**
+ * One screenshot in a claim attempt's timeline.
+ *
+ * @typedef {object} TraceFrame
+ * @property {number} index - 1-based capture order; also the filename prefix
+ * @property {string} label - what had just happened, e.g. 'loaded', 'navigated'
+ * @property {string} filename
+ * @property {string} path
+ * @property {string|null} url - page URL at capture time
+ * @property {number} atMs - ms since the attempt started
+ * @property {string} at - ISO timestamp
+ */
+
+/**
+ * A control the page was offering when we last looked.
+ *
+ * @typedef {object} PageAction
+ * @property {string} text
+ * @property {string} tag
+ * @property {string|null} href
+ * @property {boolean} disabled
+ * @property {boolean} visible
+ */
+
+/**
  * What happened when the handler tried to claim the spot.
  *
  * @typedef {object} Attempt
  * @property {'booked'|'still_waitlisted'|'error'} outcome
- * @property {string} screenshotPath - always written; poll.js attaches it to the reply
+ * @property {string|null} screenshotPath - the frame that justifies the outcome; poll.js attaches it to the reply
  * @property {string} finalUrl
  * @property {string} bodyText
+ * @property {string} [traceDir] - directory holding every frame plus trace.json
+ * @property {string|null} [manifestPath]
+ * @property {TraceFrame[]} [frames] - the full timeline, in capture order
+ * @property {boolean} [mentionsPayment] - page asked for a deposit/card details
+ * @property {PageAction[]} [actions] - controls present on the final page
  */
 
 /**
